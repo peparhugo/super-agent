@@ -1,0 +1,122 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-super_agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-super_agent}
+      POSTGRES_DB: ${POSTGRES_DB:-super_agent}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  opa:
+    image: openpolicyagent/opa:latest
+    restart: unless-stopped
+    command: ["run", "--server", "--addr", "0.0.0.0:8181", "/policies"]
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./services/api/policies:/policies:ro
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://super_agent:super_agent@postgres:5432/super_agent}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      REDIS_BROKER_URL: ${REDIS_BROKER_URL:-redis://redis:6379/0}
+      REDIS_RESULT_BACKEND: ${REDIS_RESULT_BACKEND:-redis://redis:6379/1}
+      OPA_URL: ${OPA_URL:-http://opa:8181}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - qdrant
+      - minio
+      - redis
+      - opa
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/api/worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://super_agent:super_agent@postgres:5432/super_agent}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      REDIS_BROKER_URL: ${REDIS_BROKER_URL:-redis://redis:6379/0}
+      REDIS_RESULT_BACKEND: ${REDIS_RESULT_BACKEND:-redis://redis:6379/1}
+      OPA_URL: ${OPA_URL:-http://opa:8181}
+    depends_on:
+      - postgres
+      - qdrant
+      - minio
+      - redis
+      - opa
+
+  beat:
+    build:
+      context: .
+      dockerfile: services/api/worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: ["celery", "-A", "app.worker.celery_app", "beat", "--loglevel=info"]
+    environment:
+      REDIS_BROKER_URL: ${REDIS_BROKER_URL:-redis://redis:6379/0}
+      REDIS_RESULT_BACKEND: ${REDIS_RESULT_BACKEND:-redis://redis:6379/1}
+    depends_on:
+      - redis
+
+  adminer:
+    image: adminer:latest
+    profiles: ["admin"]
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  minio_data:
