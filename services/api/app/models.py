@@ -98,6 +98,31 @@ class Agent(Base):
     )
 
 
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    source_path: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    source: Mapped[str] = mapped_column(String(128), nullable=False, default="filesystem")
+    domain: Mapped[str] = mapped_column(String(64), nullable=False, default="shared", index=True)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="discovered", index=True)
+    summary: Mapped[str | None] = mapped_column(Text)
+    metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    discovered_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.datetime.utcnow
+    )
+    summarized_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.datetime.utcnow,
+        onupdate=datetime.datetime.utcnow,
+    )
+
+
 class EvalRun(Base):
     __tablename__ = "eval_runs"
 

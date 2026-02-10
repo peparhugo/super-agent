@@ -88,3 +88,60 @@ Run Celery beat:
 source .venv/bin/activate
 celery -A app.worker.celery_app beat --loglevel=info
 ```
+
+## Knowledge ingestion and summarization operations
+
+The API now supports filesystem-backed knowledge ingestion rooted at `knowledge/`.
+Use the default domain-aware structure:
+
+```text
+knowledge/
+├── corporate/incoming/
+├── academic/incoming/
+└── shared/incoming/
+```
+
+### How to add documents
+
+1. Add UTF-8 text-like files (`.md`, `.txt`, `.rst`, `.json`, `.yaml`, `.yml`, `.csv`) into one of the domain folders under `knowledge/<domain>/incoming/`.
+2. The ingestion watcher discovers new/changed files and records each source in Postgres (`knowledge_documents`) with checksum + lifecycle metadata.
+3. For each discovery and summary action, append-only memory events are written (`knowledge.document.discovered`, `knowledge.document.summarized`).
+
+### How summaries and indexing work
+
+- `app.memory.ingest.run_ingestion_cycle` scans the filesystem, updates Postgres metadata, summarizes pending documents through the LLM endpoint, and upserts vectors to Qdrant.
+- Each vector payload uses compact summary text and includes metadata fields like `source`, `date`, and `domain` for retrieval filters.
+- Celery beat schedules the workflow via `app.worker.tasks.ingest.ingest_knowledge_documents`.
+
+### Triggering or re-running indexing
+
+Run one ingestion cycle manually:
+
+```bash
+source .venv/bin/activate
+KNOWLEDGE_WATCH_ONCE=true python -m app.memory.ingest
+```
+
+Run continuously as a local watcher:
+
+```bash
+source .venv/bin/activate
+python -m app.memory.ingest
+```
+
+Trigger through Celery directly:
+
+```bash
+source .venv/bin/activate
+celery -A app.worker.celery_app call app.worker.tasks.ingest.ingest_knowledge_documents
+```
+
+Force re-index for an updated file by editing its contents. The checksum changes, so the document is marked discovered again and re-summarized/re-embedded on the next cycle.
+
+### Updating AGENTS/skills when adding new knowledge domains
+
+When introducing new domain folders or ingestion conventions:
+
+1. Update repository-level `AGENTS.md` domain guidance to describe the new domain and intended use.
+2. Update any domain skill definitions under `.agents/skills/` so prompts, constraints, and evaluation criteria include the new knowledge source.
+3. Verify Celery beat and retrieval filters still map cleanly to the revised domain taxonomy (`domain` metadata in Qdrant + Postgres).

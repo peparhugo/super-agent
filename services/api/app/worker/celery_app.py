@@ -14,6 +14,10 @@ celery_app.conf.update(
             "task": "app.worker.tasks.embed.embed_new_items",
             "schedule": float(os.getenv("EMBED_SCHEDULE_SECONDS", "300")),
         },
+        "ingest-knowledge-documents": {
+            "task": "app.worker.tasks.ingest.ingest_knowledge_documents",
+            "schedule": float(os.getenv("KNOWLEDGE_INGEST_SCHEDULE_SECONDS", "180")),
+        },
         "consolidate-candidates": {
             "task": "app.worker.tasks.consolidate.consolidate_candidates",
             "schedule": crontab(minute="*/10"),

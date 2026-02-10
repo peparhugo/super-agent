@@ -57,10 +57,12 @@ Each plan is self-contained with verification steps and references Milestone 1 (
 2. Capture provenance, licensing, and update cadence.
 3. Schedule ingestion jobs and assign owners.
 4. Document expected outputs and retention policy.
+5. Implement `app.memory.ingest` watcher + Celery beat schedule for continuous discovery/summarization.
 
 **Verification**
 - Review manifest schema documentation for completeness.
 - Confirm provenance steps are documented in skill references.
+- Run `KNOWLEDGE_WATCH_ONCE=true python -m app.memory.ingest` and verify Postgres (`knowledge_documents`) plus Qdrant summary payloads are updated.
 
 ## Multi-Agent Orchestration ExecPlan
 **Objective**: Execute planner/developer/tester roles with traceability and MCP tooling.
