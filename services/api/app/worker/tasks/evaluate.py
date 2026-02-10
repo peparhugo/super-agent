@@ -6,11 +6,13 @@ from typing import Any
 from celery.utils.log import get_task_logger
 from sqlalchemy import select
 
+from app.authz import AuthorizationError, authorize_promotion, normalize_risk, normalize_role
 from app.db import get_sessionmaker
 from app.eval.harness import CheckResult, run_all_checks, summarize_results
 from app.models import Agent, EvalResult, EvalRun, RegistryStatus, Skill
 from app.registry.agents import transition_agent_status
 from app.registry.skills import transition_skill_status
+from app.settings import get_settings
 from app.worker.celery_app import celery_app
 
 logger = get_task_logger(__name__)
@@ -32,6 +34,14 @@ def _candidate_payload(candidate: Agent | Skill) -> dict[str, Any]:
         "description": candidate.description,
         "config": candidate.config,
     }
+
+
+def _candidate_risk_level(candidate: Agent | Skill) -> str:
+    if isinstance(candidate, Skill):
+        spec = candidate.spec or {}
+        return normalize_risk(spec.get("risk_level") or spec.get("risk"))
+    config = candidate.config or {}
+    return normalize_risk(config.get("risk_level") or config.get("risk"))
 
 
 def _check_to_result(eval_run_id, check: CheckResult) -> EvalResult:
@@ -69,6 +79,25 @@ async def _evaluate_candidate(session, candidate: Agent | Skill) -> dict[str, An
     await session.commit()
 
     if summary["passed"]:
+        settings = get_settings()
+        try:
+            decision = await authorize_promotion(
+                settings,
+                agent_role=normalize_role("worker"),
+                agent_risk_level="medium",
+                candidate_type=candidate_type,
+                candidate_risk_level=_candidate_risk_level(candidate),
+            )
+        except AuthorizationError as exc:
+            logger.warning("Promotion authorization failed: %s", exc)
+            summary["passed"] = False
+            summary["promotion_allowed"] = False
+            return summary
+        if not decision.allowed:
+            logger.info("Promotion denied for %s: %s", candidate_type, decision.reasons)
+            summary["passed"] = False
+            summary["promotion_allowed"] = False
+            return summary
         if isinstance(candidate, Skill):
             await transition_skill_status(
                 session, skill_id=str(candidate.skill_id), new_status=RegistryStatus.ACTIVE
@@ -77,6 +106,7 @@ async def _evaluate_candidate(session, candidate: Agent | Skill) -> dict[str, An
             await transition_agent_status(
                 session, agent_id=str(candidate.agent_id), new_status=RegistryStatus.ACTIVE
             )
+        summary["promotion_allowed"] = True
     return summary
 
 

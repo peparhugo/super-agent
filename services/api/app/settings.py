@@ -9,6 +9,9 @@ from functools import lru_cache
 class Settings:
     llm_base_url: str
     llm_api_key: str | None
+    opa_base_url: str
+    opa_timeout_s: float
+    opa_fail_open: bool
     planner_model: str
     verifier_model: str
     chat_model: str
@@ -25,6 +28,9 @@ def get_settings() -> Settings:
     return Settings(
         llm_base_url=os.getenv("LLM_BASE_URL", "http://localhost:8001"),
         llm_api_key=os.getenv("LLM_API_KEY"),
+        opa_base_url=os.getenv("OPA_BASE_URL", "http://localhost:8181"),
+        opa_timeout_s=float(os.getenv("OPA_TIMEOUT_S", "4")),
+        opa_fail_open=os.getenv("OPA_FAIL_OPEN", "false").lower() == "true",
         planner_model=os.getenv("PLANNER_MODEL", "gpt-4.1-mini"),
         verifier_model=os.getenv("VERIFIER_MODEL", "gpt-4.1-mini"),
         chat_model=os.getenv("CHAT_MODEL", "gpt-4.1"),
