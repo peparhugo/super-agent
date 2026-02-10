@@ -19,6 +19,27 @@ services/api/
     └── Dockerfile
 ```
 
+## Authorization policies and sandbox profiles
+
+OPA policies live in `services/api/policies/` and are queried by the runtime/worker before
+tool execution, memory reads, and candidate promotion. The default policy inputs include
+agent role, risk level, and an execution profile to ensure least-privilege tool access.
+
+### Sandbox execution profiles
+
+Tools must run with restricted execution profiles (no Docker socket access and constrained
+filesystem visibility). The default profile used by the runtime is `sandbox_standard`.
+
+| Profile | Docker socket | Filesystem access | Intended use |
+| --- | --- | --- | --- |
+| `sandbox_low` | Disabled | Read-only + temp | Low-risk read-only tools |
+| `sandbox_standard` | Disabled | Workspace-scoped + temp | Standard tool execution |
+| `sandbox_sensitive` | Disabled | Workspace-scoped + temp | Higher-risk tools with stricter review |
+| `sandbox_privileged` | Disabled | Workspace-scoped + temp | Admin-only tools (still no Docker socket) |
+
+The `filesystem` value sent to OPA is one of `readonly`, `workspace`, or `temp`, and the
+policies deny any execution profile that requests Docker socket access.
+
 ## Environment configuration
 
 Copy the example environment file and update secrets as needed:

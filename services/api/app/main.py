@@ -8,6 +8,13 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import (
+    AuthorizationError,
+    ExecutionProfile,
+    authorize_tool_access,
+    normalize_risk,
+    normalize_role,
+)
 from app.db import get_session
 from app.models import Event, RegistryStatus
 from app.registry.agents import create_agent, get_agent, transition_agent_status
@@ -95,7 +102,7 @@ async def chat(
 ) -> ChatResponse:
     await _log_event(session, "chat.request", {"message": payload.message})
     embedding = await _embed_query(payload.message, settings)
-    routed = await _route(session, payload, embedding)
+    routed = await _route(session, payload, embedding, settings)
     planner = PlannerClient(settings)
     plan = await planner.create_plan(
         user_input=payload.message,
@@ -103,14 +110,20 @@ async def chat(
         skill_pointers=routed.skill_pointers,
         memory_pointers=routed.memory_pointers,
     )
+    await _authorize_plan_tools(settings, routed, plan)
     output = await _act(settings, payload.message, routed)
     verifier = VerifierClient(settings)
     verification = await verifier.verify(
         plan={"steps": [step.__dict__ for step in plan.steps], "notes": plan.notes},
         output=output,
         schema={"response": "string"},
-        policy={"follow_agent_template": True, "cite_memory": True},
+        policy={
+            "follow_agent_template": True,
+            "cite_memory": True,
+            "disallow_retrieved_only_actions": True,
+        },
         evidence={
+            "user_input": payload.message,
             "agent": routed.agent_metadata,
             "skills": [pointer.metadata for pointer in routed.skill_pointers],
             "memory": [pointer.metadata for pointer in routed.memory_pointers],
@@ -240,10 +253,12 @@ async def _route(
     session: AsyncSession,
     payload: ChatRequest,
     embedding: list[float],
+    settings: Settings,
 ) -> RoutedRequest:
     statuses = payload.statuses or [RegistryStatus.ACTIVE]
     return await route_request(
         session,
+        settings,
         query_embedding=embedding,
         statuses=statuses,
         tags=payload.tags,
@@ -312,3 +327,40 @@ async def _act(
 async def _log_event(session: AsyncSession, event_type: str, payload: dict) -> None:
     session.add(Event(event_type=event_type, payload=payload))
     await session.commit()
+
+
+async def _authorize_plan_tools(
+    settings: Settings,
+    routed: RoutedRequest,
+    plan,
+) -> None:
+    agent_template = routed.agent_template or {}
+    agent_role = normalize_role(agent_template.get("role") or agent_template.get("agent_role"))
+    agent_risk = normalize_risk(agent_template.get("risk_level") or agent_template.get("risk"))
+    tool_risks = agent_template.get("tool_risk_levels") or {}
+    execution_profile = ExecutionProfile(
+        profile=agent_template.get("execution_profile", "sandbox_standard"),
+        docker_socket=False,
+        filesystem=agent_template.get("filesystem_profile", "workspace"),
+    )
+    for step in plan.steps:
+        if not step.tool:
+            continue
+        tool_risk = tool_risks.get(step.tool)
+        try:
+            decision = await authorize_tool_access(
+                settings,
+                agent_role=agent_role,
+                agent_risk_level=agent_risk,
+                tool_name=step.tool,
+                tool_risk_level=tool_risk,
+                execution_profile=execution_profile,
+            )
+        except AuthorizationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if not decision.allowed:
+            reason = ", ".join(decision.reasons) if decision.reasons else "tool access denied"
+            raise HTTPException(
+                status_code=403,
+                detail=f"Tool '{step.tool}' is not authorized: {reason}",
+            )

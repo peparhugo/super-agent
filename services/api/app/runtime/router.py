@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import datetime
+import logging
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import AuthorizationError, authorize_memory_access, normalize_risk, normalize_role
 from app.memory.retrieval import MemoryPointer, hybrid_retrieval
 from app.models import Agent, RegistryStatus
+from app.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,7 @@ async def _select_agent_template(
 
 async def route_request(
     session: AsyncSession,
+    settings: Settings,
     *,
     query_embedding: list[float],
     statuses: Sequence[RegistryStatus] = (RegistryStatus.ACTIVE,),
@@ -91,9 +97,55 @@ async def route_request(
         domain=domain,
         since=since,
     )
+    agent_role = normalize_role(
+        agent_template.get("role") or agent_template.get("agent_role") or agent_metadata.get("role")
+    )
+    agent_risk = normalize_risk(agent_template.get("risk_level") or agent_template.get("risk"))
+    skill_pointers = await _filter_memory_pointers(
+        settings,
+        agent_role=agent_role,
+        agent_risk=agent_risk,
+        pointers=skill_pointers,
+        source="skill_retrieval",
+    )
+    memory_pointers = await _filter_memory_pointers(
+        settings,
+        agent_role=agent_role,
+        agent_risk=agent_risk,
+        pointers=memory_pointers,
+        source="memory_retrieval",
+    )
     return RoutedRequest(
         agent_template=agent_template,
         agent_metadata=agent_metadata,
         skill_pointers=skill_pointers,
         memory_pointers=memory_pointers,
     )
+
+
+async def _filter_memory_pointers(
+    settings: Settings,
+    *,
+    agent_role: str,
+    agent_risk: str,
+    pointers: list[MemoryPointer],
+    source: str,
+) -> list[MemoryPointer]:
+    allowed: list[MemoryPointer] = []
+    for pointer in pointers:
+        try:
+            decision = await authorize_memory_access(
+                settings,
+                agent_role=agent_role,
+                agent_risk_level=agent_risk,
+                memory_risk_level=pointer.metadata.get("risk_level"),
+                memory_type=pointer.item_type,
+                source=source,
+                contains_instruction=bool(pointer.metadata.get("contains_instruction")),
+                tags=pointer.metadata.get("tags"),
+            )
+            if decision.allowed:
+                allowed.append(pointer)
+        except AuthorizationError as exc:
+            logger.warning("Memory authorization failed for %s: %s", pointer.item_id, exc)
+    return allowed
